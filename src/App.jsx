@@ -29,12 +29,21 @@ import {
   Settings
 } from 'lucide-react';
 
-// Firebase configuration from environment
-const firebaseConfig = JSON.parse(__firebase_config);
+// Firebase configuration (Vercel compatible)
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'aivsc-prep-portal';
+const appId = "aivsc-prep-portal";
+
 
 // ==================================================================================
 // 🟢🟢🟢 USER CONTENT AREA: ADD YOUR QUESTIONS HERE 🟢🟢🟢
@@ -282,18 +291,15 @@ export default function App() {
   const [accessCodeInput, setAccessCodeInput] = useState('');
 
   // Authentication Setup (Anonymous for real-time features)
-  useEffect(() => {
-    const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
+ useEffect(() => {
+  const initAuth = async () => {
+    await signInAnonymously(auth);
+  };
+  initAuth();
+  const unsubscribe = onAuthStateChanged(auth, setUser);
+  return () => unsubscribe();
+}, []);
+
 
   // Sync locks from Firestore in real-time
   useEffect(() => {
@@ -867,3 +873,4 @@ const FloatingAIChat = ({ isVisible }) => {
     </div>
   );
 };
+
