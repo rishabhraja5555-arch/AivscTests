@@ -124,6 +124,9 @@ export default function App() {
         }
       } catch (err) {
         console.error("Auth Error:", err);
+        if (!db) {
+          setSyncMessage('Realtime sync unavailable: check Firebase config.');
+        }
       }
     };
     initAuth();
@@ -133,9 +136,9 @@ export default function App() {
 
   // Sync locks from Firestore in real-time (Rule 1 & 3 Compliance)
   useEffect(() => {
-    if (!user || !db) {
+    if (!db) {
       setLocks({});
-      setSyncMessage('Realtime sync unavailable: waiting for Firebase auth.');
+      setSyncMessage('Realtime sync unavailable: check Firebase config.');
       return;
     }
 
@@ -153,15 +156,15 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user, db, appId]);
+  }, [db, appId]);
 
   // Handle locking/unlocking action
   const toggleLock = async (e, key) => {
     e.stopPropagation();
     if (!adminAuth || pendingLocks[key]) return;
 
-    if (!user || !db) {
-      setSyncMessage('Realtime sync unavailable: check Firebase config/auth.');
+    if (!db) {
+      setSyncMessage('Realtime sync unavailable: check Firebase config.');
       return;
     }
 
