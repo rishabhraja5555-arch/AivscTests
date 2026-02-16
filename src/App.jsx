@@ -152,17 +152,27 @@ export default function App() {
   // Handle locking/unlocking action
   const toggleLock = async (e, key) => {
     e.stopPropagation();
-    if (!adminAuth || !user || !db || pendingLocks[key]) return;
+    if (!adminAuth || pendingLocks[key]) return;
 
     const previousLockValue = !!locks[key];
     const nextLockValue = !previousLockValue;
-    const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
 
     setPendingLocks((prev) => ({ ...prev, [key]: true }));
     setLocks((prev) => ({ ...prev, [key]: nextLockValue }));
 
+    if (!user || !db) {
+      setPendingLocks((prev) => {
+        const updated = { ...prev };
+        delete updated[key];
+        return updated;
+      });
+      return;
+    }
+
+    const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
+
     try {
-      await setDoc(lockDoc, { locks: { [key]: nextLockValue } }, { merge: true });
+      await setDoc(lockDoc, { [`locks.${key}`]: nextLockValue }, { merge: true });
     } catch (error) {
       console.error('Failed to update lock state:', error);
       setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
