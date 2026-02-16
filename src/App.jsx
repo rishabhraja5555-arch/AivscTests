@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { 
   Shield, Plane, ChevronRight, ArrowLeft, Award, 
   X, Lock, Unlock, CheckCircle2, 
@@ -172,10 +172,19 @@ export default function App() {
     const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
 
     try {
-      await setDoc(lockDoc, { [`locks.${key}`]: nextLockValue }, { merge: true });
+      await updateDoc(lockDoc, { [`locks.${key}`]: nextLockValue });
     } catch (error) {
-      console.error('Failed to update lock state:', error);
-      setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
+      if (error?.code === 'not-found') {
+        try {
+          await setDoc(lockDoc, { locks: { [key]: nextLockValue } }, { merge: true });
+        } catch (fallbackError) {
+          console.error('Failed to create lock document:', fallbackError);
+          setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
+        }
+      } else {
+        console.error('Failed to update lock state:', error);
+        setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
+      }
     } finally {
       setPendingLocks((prev) => {
         const updated = { ...prev };
