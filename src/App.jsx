@@ -4,7 +4,7 @@ import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken }
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { 
   Shield, Plane, ChevronRight, ArrowLeft, Award, 
-  X, Lock, Unlock, FolderOpen, Download, CheckCircle2, 
+  X, Lock, Unlock, CheckCircle2, 
   Target, BookOpen, GraduationCap, Activity
 } from 'lucide-react';
 
@@ -107,6 +107,7 @@ export default function App() {
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [adminAuth, setAdminAuth] = useState(false);
   const [accessCodeInput, setAccessCodeInput] = useState('');
+  const [pendingLocks, setPendingLocks] = useState({});
 
   // Authentication Setup (Rule 3 Compliance)
   useEffect(() => {
@@ -131,23 +132,47 @@ export default function App() {
 
   // Sync locks from Firestore in real-time (Rule 1 & 3 Compliance)
   useEffect(() => {
-    if (!user || !db) return;
+    if (!user || !db) {
+      setLocks({});
+      return;
+    }
+
     const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
     const unsubscribe = onSnapshot(lockDoc, (snapshot) => {
       if (snapshot.exists()) {
         setLocks(snapshot.data().locks || {});
+      } else {
+        setLocks({});
       }
     }, (error) => console.error("Firestore Listen Error:", error));
+
     return () => unsubscribe();
-  }, [user]);
+  }, [user, db, appId]);
 
   // Handle locking/unlocking action
   const toggleLock = async (e, key) => {
     e.stopPropagation();
-    if (!adminAuth || !user || !db) return;
+    if (!adminAuth || !user || !db || pendingLocks[key]) return;
+
+    const previousLockValue = !!locks[key];
+    const nextLockValue = !previousLockValue;
     const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
-    const newLocks = { ...locks, [key]: !locks[key] };
-    await setDoc(lockDoc, { locks: newLocks }, { merge: true });
+
+    setPendingLocks((prev) => ({ ...prev, [key]: true }));
+    setLocks((prev) => ({ ...prev, [key]: nextLockValue }));
+
+    try {
+      await setDoc(lockDoc, { locks: { [key]: nextLockValue } }, { merge: true });
+    } catch (error) {
+      console.error('Failed to update lock state:', error);
+      setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
+    } finally {
+      setPendingLocks((prev) => {
+        const updated = { ...prev };
+        delete updated[key];
+        return updated;
+      });
+    }
   };
 
   const isLocked = (key) => !!locks[key];
@@ -237,6 +262,7 @@ export default function App() {
                 const lockKey = `section_${subj.id}`;
                 const locked = isLocked(lockKey);
                 const disabled = locked && !adminAuth;
+                const isUpdating = !!pendingLocks[lockKey];
 
                 return (
                   <div 
@@ -251,7 +277,8 @@ export default function App() {
                       {adminAuth ? (
                         <button 
                           onClick={(e) => toggleLock(e, lockKey)}
-                          className={`p-2.5 rounded-xl transition-all ${locked ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}
+                          disabled={isUpdating}
+                          className={`p-2.5 rounded-xl transition-all disabled:opacity-60 disabled:cursor-not-allowed ${locked ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}
                         >
                           {locked ? <Lock size={20} /> : <Unlock size={20} />}
                         </button>
@@ -290,6 +317,7 @@ export default function App() {
                 const lockKey = `chapter_${selectedSubject.id}_${idx}`;
                 const locked = isLocked(lockKey);
                 const disabled = locked && !adminAuth;
+                const isUpdating = !!pendingLocks[lockKey];
 
                 return (
                   <div 
@@ -307,7 +335,8 @@ export default function App() {
                       {adminAuth ? (
                         <button 
                           onClick={(e) => toggleLock(e, lockKey)}
-                          className={`p-2 rounded-lg ${locked ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}
+                          disabled={isUpdating}
+                          className={`p-2 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed ${locked ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}
                         >
                           {locked ? <Lock size={18} /> : <Unlock size={18} />}
                         </button>
@@ -345,6 +374,7 @@ export default function App() {
                 const lockKey = `set_${selectedSubject.id}_${selectedChapterIdx}_${setIdx}`;
                 const locked = isLocked(lockKey);
                 const disabled = locked && !adminAuth;
+                const isUpdating = !!pendingLocks[lockKey];
                 const hasData = !!questionDatabase[selectedSubject.id]?.[selectedChapterIdx]?.[setIdx];
 
                 return (
@@ -360,7 +390,8 @@ export default function App() {
                       {adminAuth ? (
                         <button 
                           onClick={(e) => toggleLock(e, lockKey)}
-                          className={`p-2.5 rounded-xl ${locked ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}
+                          disabled={isUpdating}
+                          className={`p-2.5 rounded-xl disabled:opacity-60 disabled:cursor-not-allowed ${locked ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}
                         >
                           {locked ? <Lock size={20} /> : <Unlock size={20} />}
                         </button>
