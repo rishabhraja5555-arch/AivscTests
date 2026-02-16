@@ -23,6 +23,16 @@ const parseFirebaseConfig = (value) => {
   }
 };
 
+const normalizeFirebaseConfig = (config) => {
+  if (!config?.apiKey || !config?.projectId) return null;
+
+  return {
+    ...config,
+    authDomain: config.authDomain || `${config.projectId}.firebaseapp.com`,
+    storageBucket: config.storageBucket || `${config.projectId}.appspot.com`
+  };
+};
+
 const envValue = (...keys) => {
   for (const key of keys) {
     if (import.meta.env[key]) return import.meta.env[key];
@@ -41,15 +51,16 @@ const envFirebaseConfig = {
 };
 
 const hasDiscreteEnvFirebaseConfig = Object.values(envFirebaseConfig).some(Boolean);
-const firebaseConfig =
+const firebaseConfig = normalizeFirebaseConfig(
   parseFirebaseConfig(getRuntimeGlobal('__firebase_config')) ||
   parseFirebaseConfig(envValue('VITE_FIREBASE_CONFIG', 'NEXT_PUBLIC_FIREBASE_CONFIG', 'REACT_APP_FIREBASE_CONFIG')) ||
-  (hasDiscreteEnvFirebaseConfig ? envFirebaseConfig : null);
+  (hasDiscreteEnvFirebaseConfig ? envFirebaseConfig : null)
+);
 
-const hasFirebaseConfig = Boolean(firebaseConfig?.apiKey && firebaseConfig?.projectId && firebaseConfig?.appId);
+const hasFirebaseConfig = Boolean(firebaseConfig);
 
 if (!hasFirebaseConfig) {
-  console.warn('Firebase config missing required keys (apiKey, projectId, appId). Realtime sync is disabled.');
+  console.warn('Firebase config missing required keys (apiKey, projectId). Realtime sync is disabled.');
 }
 
 const app = hasFirebaseConfig ? initializeApp(firebaseConfig) : null;
