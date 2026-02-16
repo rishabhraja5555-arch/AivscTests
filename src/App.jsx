@@ -8,13 +8,43 @@ import {
   Target, BookOpen, GraduationCap, Activity
 } from 'lucide-react';
 
-// Firebase configuration - Using environment variables to fix Auth error
-const firebaseConfig = JSON.parse(__firebase_config);
+// Firebase configuration with robust fallbacks for non-Firebase hosting (e.g. Vercel)
+const getRuntimeGlobal = (key) => (typeof globalThis[key] !== 'undefined' ? globalThis[key] : null);
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'aivsc-prep-portal';
+const parseFirebaseConfig = (value) => {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    console.error('Invalid Firebase config JSON:', error);
+    return null;
+  }
+};
+
+const envFirebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+};
+
+const hasDiscreteEnvFirebaseConfig = Object.values(envFirebaseConfig).some(Boolean);
+const firebaseConfig =
+  parseFirebaseConfig(getRuntimeGlobal('__firebase_config')) ||
+  parseFirebaseConfig(import.meta.env.VITE_FIREBASE_CONFIG) ||
+  (hasDiscreteEnvFirebaseConfig ? envFirebaseConfig : null);
+
+const hasFirebaseConfig = Boolean(firebaseConfig?.apiKey && firebaseConfig?.projectId && firebaseConfig?.appId);
+
+const app = hasFirebaseConfig ? initializeApp(firebaseConfig) : null;
+const auth = app ? getAuth(app) : null;
+const db = app ? getFirestore(app) : null;
+const appId = getRuntimeGlobal('__app_id') || import.meta.env.VITE_APP_ID || 'aivsc-prep-portal';
 
 // ==================================================================================
 // 🟢 CONTENT DATA
@@ -80,10 +110,13 @@ export default function App() {
 
   // Authentication Setup (Rule 3 Compliance)
   useEffect(() => {
+    if (!auth) return;
+
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+        const initialAuthToken = getRuntimeGlobal('__initial_auth_token');
+        if (initialAuthToken) {
+          await signInWithCustomToken(auth, initialAuthToken);
         } else {
           await signInAnonymously(auth);
         }
@@ -98,7 +131,7 @@ export default function App() {
 
   // Sync locks from Firestore in real-time (Rule 1 & 3 Compliance)
   useEffect(() => {
-    if (!user) return;
+    if (!user || !db) return;
     const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
     const unsubscribe = onSnapshot(lockDoc, (snapshot) => {
       if (snapshot.exists()) {
@@ -111,7 +144,7 @@ export default function App() {
   // Handle locking/unlocking action
   const toggleLock = async (e, key) => {
     e.stopPropagation();
-    if (!adminAuth || !user) return;
+    if (!adminAuth || !user || !db) return;
     const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
     const newLocks = { ...locks, [key]: !locks[key] };
     await setDoc(lockDoc, { locks: newLocks }, { merge: true });
