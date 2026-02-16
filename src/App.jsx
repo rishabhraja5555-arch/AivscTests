@@ -108,6 +108,7 @@ export default function App() {
   const [adminAuth, setAdminAuth] = useState(false);
   const [accessCodeInput, setAccessCodeInput] = useState('');
   const [pendingLocks, setPendingLocks] = useState({});
+  const [syncMessage, setSyncMessage] = useState('');
 
   // Authentication Setup (Rule 3 Compliance)
   useEffect(() => {
@@ -134,6 +135,7 @@ export default function App() {
   useEffect(() => {
     if (!user || !db) {
       setLocks({});
+      setSyncMessage('Realtime sync unavailable: waiting for Firebase auth.');
       return;
     }
 
@@ -144,7 +146,11 @@ export default function App() {
       } else {
         setLocks({});
       }
-    }, (error) => console.error("Firestore Listen Error:", error));
+      setSyncMessage('');
+    }, (error) => {
+      console.error("Firestore Listen Error:", error);
+      setSyncMessage('Realtime sync error: unable to read lock updates.');
+    });
 
     return () => unsubscribe();
   }, [user, db, appId]);
@@ -154,29 +160,27 @@ export default function App() {
     e.stopPropagation();
     if (!adminAuth || pendingLocks[key]) return;
 
+    if (!user || !db) {
+      setSyncMessage('Realtime sync unavailable: check Firebase config/auth.');
+      return;
+    }
+
     const previousLockValue = !!locks[key];
     const nextLockValue = !previousLockValue;
 
     setPendingLocks((prev) => ({ ...prev, [key]: true }));
     setLocks((prev) => ({ ...prev, [key]: nextLockValue }));
 
-    if (!user || !db) {
-      setPendingLocks((prev) => {
-        const updated = { ...prev };
-        delete updated[key];
-        return updated;
-      });
-      return;
-    }
-
     const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
 
     try {
       await updateDoc(lockDoc, { [`locks.${key}`]: nextLockValue });
+      setSyncMessage('');
     } catch (error) {
       if (error?.code === 'not-found') {
         try {
           await setDoc(lockDoc, { locks: { [key]: nextLockValue } }, { merge: true });
+          setSyncMessage('');
         } catch (fallbackError) {
           console.error('Failed to create lock document:', fallbackError);
           setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
@@ -184,6 +188,7 @@ export default function App() {
       } else {
         console.error('Failed to update lock state:', error);
         setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
+        setSyncMessage('Realtime sync error: lock write failed.');
       }
     } finally {
       setPendingLocks((prev) => {
@@ -267,6 +272,11 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto p-4 md:p-8">
+        {adminAuth && syncMessage && (
+          <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+            {syncMessage}
+          </div>
+        )}
         {/* VIEW: HOME (Sections) */}
         {view === 'home' && (
           <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
