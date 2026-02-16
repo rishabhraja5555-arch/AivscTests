@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { 
   Shield, 
   Plane, 
@@ -11,6 +14,7 @@ import {
   X, 
   Minimize2, 
   Lock, 
+  Unlock,
   Send, 
   FileText, 
   FolderOpen,
@@ -21,8 +25,16 @@ import {
   Target,
   BookOpen,
   GraduationCap,
-  Activity
+  Activity,
+  Settings
 } from 'lucide-react';
+
+// Firebase configuration from environment
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'aivsc-prep-portal';
 
 // ==================================================================================
 // 🟢🟢🟢 USER CONTENT AREA: ADD YOUR QUESTIONS HERE 🟢🟢🟢
@@ -256,20 +268,523 @@ const getQuestions = (subjectId, chapterIndex, setIndex) => {
   return [];
 };
 
-const Header = ({ goHome }) => (
-  <header className="bg-white/95 backdrop-blur-md border-b border-slate-200 px-6 py-4 sticky top-0 z-50">
-    <div className="max-w-6xl mx-auto flex justify-between items-center">
-      <div className="flex items-center gap-4 cursor-pointer" onClick={goHome}>
-        <div>
-          <h1 className="text-xl md:text-2xl font-black tracking-tight leading-none mb-1 text-[#003153]">
-            <span className="text-[#BF0A30]">AIVSC</span> PREP PORTAL
-          </h1>
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Developed By Flt Cdt Rishabh Raja</p>
-        </div>
+export default function App() {
+  const [view, setView] = useState('home');
+  const [user, setUser] = useState(null);
+  const [selectedSubject, setSelectedSubject] = useState(null);
+  const [selectedChapterIdx, setSelectedChapterIdx] = useState(null);
+  const [selectedSetIdx, setSelectedSetIdx] = useState(null);
+  const [questions, setQuestions] = useState([]);
+  const [userAnswers, setUserAnswers] = useState({});
+  const [locks, setLocks] = useState({}); // All unlocked by default
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const [adminAuth, setAdminAuth] = useState(false);
+  const [accessCodeInput, setAccessCodeInput] = useState('');
+
+  // Authentication Setup
+  useEffect(() => {
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // Sync locks from Firestore (Real-time override)
+  useEffect(() => {
+    if (!user) return;
+    const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
+    const unsubscribe = onSnapshot(lockDoc, (snapshot) => {
+      if (snapshot.exists()) {
+        setLocks(snapshot.data().locks || {});
+      } else {
+        setLocks({});
+      }
+    }, (error) => console.error("Sync Error:", error));
+    return () => unsubscribe();
+  }, [user, appId]);
+
+  const updateLockState = async (key, isLockedValue) => {
+    if (!adminAuth || !user) return;
+    const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
+    const newLocks = { ...locks, [key]: isLockedValue };
+    await setDoc(lockDoc, { locks: newLocks }, { merge: true });
+  };
+
+  const isLocked = (key) => !!locks[key];
+
+  const goHome = () => {
+    setView('home');
+    setSelectedSubject(null);
+    setSelectedChapterIdx(null);
+    setUserAnswers({});
+  };
+
+  const startTest = (setIdx) => {
+    const lockKey = `set_${selectedSubject.id}_${selectedChapterIdx}_${setIdx}`;
+    if (isLocked(lockKey) && !adminAuth) {
+      return; 
+    }
+    const qList = getQuestions(selectedSubject.id, selectedChapterIdx, setIdx);
+    if (qList.length === 0) {
+      return;
+    }
+    setSelectedSetIdx(setIdx);
+    setQuestions(qList);
+    setUserAnswers({});
+    setView('test');
+    window.scrollTo(0, 0);
+  };
+
+  const handleAnswerSelection = (questionId, optionIndex) => {
+    if (userAnswers[questionId] !== undefined) return;
+    setUserAnswers(prev => ({ ...prev, [questionId]: optionIndex }));
+  };
+
+  const handleAdminAuth = () => {
+    if (accessCodeInput === '9563') {
+      setAdminAuth(true);
+      setAccessCodeInput('');
+    }
+  };
+
+  const calculateResults = () => {
+    let correct = 0;
+    let wrong = 0;
+    let skipped = 0;
+    questions.forEach(q => {
+      if (userAnswers[q.id] === undefined) skipped++;
+      else if (userAnswers[q.id] === q.correctAnswer) correct++;
+      else wrong++;
+    });
+    const accuracy = (correct + wrong) > 0 ? ((correct / (correct + wrong)) * 100).toFixed(1) : 0;
+    return { correct, wrong, skipped, accuracy };
+  };
+
+  return (
+    <div className="min-h-screen relative font-sans pb-20 overflow-x-hidden bg-blue-50/50">
+      <style>{`
+        @keyframes pulse-red {
+          0% { transform: scale(0.95); opacity: 0.7; }
+          50% { transform: scale(1.1); opacity: 1; }
+          100% { transform: scale(0.95); opacity: 0.7; }
+        }
+        .animate-pulse-red {
+          animation: pulse-red 1.5s infinite ease-in-out;
+        }
+      `}</style>
+
+      <div className="fixed inset-0 z-0 flex pointer-events-none">
+        <div className="h-full w-1/3 bg-[#BF0A30]/5"></div>
+        <div className="h-full w-1/3 bg-[#003153]/5"></div>
+        <div className="h-full w-1/3 bg-[#87CEEB]/5"></div>
       </div>
+      
+      <header className="bg-white/95 backdrop-blur-md border-b border-slate-200 px-6 py-4 sticky top-0 z-50">
+        <div className="max-w-6xl mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-4 cursor-pointer" onClick={goHome}>
+            <div>
+              <h1 className="text-xl md:text-2xl font-black tracking-tight leading-none mb-1 text-[#003153]">
+                <span className="text-[#BF0A30]">AIVSC</span> PREP PORTAL
+              </h1>
+              <p 
+                onDoubleClick={() => setIsAdminOpen(true)}
+                className="text-[10px] font-bold text-slate-400 uppercase tracking-widest select-none cursor-pointer hover:text-blue-400 transition-colors"
+              >
+                Developed By Flt Cdt Rishabh Raja
+              </p>
+            </div>
+          </div>
+        </div>
+      </header>
+      
+      <main className="relative z-10 max-w-6xl mx-auto p-4 md:p-6">
+        {view === 'home' && (
+          <div className="animate-in fade-in duration-500 mt-10">
+            <div className="text-center mb-12">
+              <div className="inline-block px-4 py-1 bg-[#003153] text-white text-[10px] font-bold uppercase tracking-widest rounded-full mb-4">Unity and Discipline</div>
+              <h2 className="text-4xl md:text-5xl font-black text-[#003153] mb-4">"By a Cadet, for the Cadets"</h2>
+              <p className="text-slate-600 max-w-lg mx-auto font-medium">Standardized preparation portal for the All India Vayu Sainik Camp.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mb-12">
+              {SUBJECTS.map(subj => {
+                const locked = isLocked(`section_${subj.id}`);
+                const isDisabled = locked && !adminAuth;
+                return (
+                  <div 
+                    key={subj.id} 
+                    onClick={() => !isDisabled && (setSelectedSubject(subj), setView('subject'))}
+                    className={`bg-white p-8 rounded-3xl border ${subj.isLive ? 'border-rose-200' : 'border-slate-100'} shadow-sm relative overflow-hidden transition-all group ${isDisabled ? 'opacity-50 grayscale cursor-not-allowed' : 'cursor-pointer hover:shadow-2xl hover:-translate-y-2'}`}
+                  >
+                    {locked && <Lock className="absolute top-4 right-4 text-red-500" size={16} />}
+                    {subj.isLive && !locked && (
+                      <div className="absolute top-4 right-4 flex items-center gap-2">
+                         <span className="w-3 h-3 bg-rose-600 rounded-full animate-pulse-red"></span>
+                         <span className="text-[10px] font-black text-rose-600 uppercase tracking-tighter">LIVE NOW</span>
+                      </div>
+                    )}
+                    <div className={`${subj.color} w-16 h-16 rounded-2xl mb-6 flex items-center justify-center text-white shadow-lg group-hover:scale-110 transition-transform`}>
+                      <SubjectIcon type={subj.icon} size={32} />
+                    </div>
+                    <h3 className="text-xl font-black text-slate-800 mb-2">{subj.title}</h3>
+                    <p className="text-slate-500 text-sm mb-6 leading-relaxed line-clamp-2">{subj.description}</p>
+                    <div className="flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                      <span>{subj.chapters.length} Modules</span>
+                      <ChevronRight size={16} className="text-slate-300 group-hover:translate-x-1 transition-transform" />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div 
+              onClick={() => setView('library')}
+              className="bg-[#003153] p-10 rounded-[2.5rem] shadow-2xl relative overflow-hidden cursor-pointer group"
+            >
+              <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
+                <FolderOpen size={160} className="text-white" />
+              </div>
+              <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
+                <div className="text-center md:text-left">
+                  <h3 className="text-3xl font-black text-white mb-2">Study Material Library</h3>
+                  <p className="text-blue-100/70 font-medium max-w-md">Access specialized handouts, SOPs, and manuals for your technical preparation.</p>
+                </div>
+                <div className="bg-white text-[#003153] px-8 py-4 rounded-2xl font-black flex items-center gap-3 hover:bg-blue-50 transition-colors">
+                  <Download size={20} />
+                  EXPLORE LIBRARY
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view === 'library' && (
+          <div className="animate-in slide-in-from-right-4 duration-500">
+            <button onClick={goHome} className="mb-6 flex items-center text-[#003153] font-bold hover:translate-x-1 transition-transform">
+              <ArrowLeft size={20} className="mr-2" /> Back to Dashboard
+            </button>
+            <div className="flex items-center gap-4 mb-10">
+              <div className="bg-[#003153] p-5 rounded-2xl text-white shadow-xl">
+                <FolderOpen size={32} />
+              </div>
+              <div>
+                <h2 className="text-3xl font-black text-[#003153]">Study Materials</h2>
+                <p className="text-slate-500 text-sm font-bold uppercase tracking-widest">Digital Repository</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {STUDY_MATERIALS.map((file) => (
+                <div key={file.id} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl transition-all group">
+                  <div className="flex justify-between items-start mb-6">
+                    <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center">
+                      <FileText size={24} />
+                    </div>
+                    <span className="bg-slate-100 text-slate-500 text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest">
+                      {file.type}
+                    </span>
+                  </div>
+                  <h4 className="text-lg font-black text-slate-800 mb-1">{file.title}</h4>
+                  <p className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-6">{file.category}</p>
+                  
+                  <div className="flex items-center justify-between pt-6 border-t border-slate-50">
+                    <span className="text-xs font-bold text-slate-400">{file.size}</span>
+                    <button 
+                      onClick={() => { if (file.link) window.open(file.link, '_blank'); }}
+                      className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-black hover:bg-blue-700 transition-colors"
+                    >
+                      <Download size={14} />
+                      {file.link ? 'OPEN LINK' : 'DOWNLOAD'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {view === 'subject' && (
+          <div className="animate-in slide-in-from-right-4 duration-500">
+            <button onClick={goHome} className="mb-6 flex items-center text-[#003153] font-bold hover:translate-x-1 transition-transform">
+              <ArrowLeft size={20} className="mr-2" /> Back to Dashboard
+            </button>
+            <div className="flex items-center gap-4 mb-10">
+              <div className={`${selectedSubject.color} p-5 rounded-2xl text-white shadow-xl`}>
+                <SubjectIcon type={selectedSubject.icon} size={32} />
+              </div>
+              <div>
+                <h2 className="text-3xl font-black text-[#003153]">{selectedSubject.title}</h2>
+                <p className="text-slate-500 text-sm font-bold uppercase tracking-widest">{selectedSubject.isLive ? 'Active Sessions' : `${selectedSubject.chapters.length} Lessons Available`}</p>
+              </div>
+            </div>
+            
+            {selectedSubject.id === 'live-test' ? (
+              <div className="grid gap-6">
+                <div className="bg-white p-10 rounded-[2.5rem] border-2 border-rose-100 shadow-xl flex flex-col items-center text-center">
+                  <div className="w-20 h-20 bg-rose-50 rounded-3xl flex items-center justify-center text-rose-600 mb-6">
+                    <Target size={40} />
+                  </div>
+                  <h3 className="text-2xl font-black text-slate-800 mb-2">Test 1 - Comprehensive Evaluation</h3>
+                  <p className="text-slate-500 max-w-md mb-8">This is a timed assessment. Ensure you have a stable connection and are in a quiet environment before starting.</p>
+                  <button 
+                    onClick={() => window.open('https://docs.google.com/forms/d/e/1FAIpQLScZsImAYduiI4XPHUhb-BJxk5FzgBNo5ZkCslDiABsO1tUICQ/viewform?usp=dialog', '_blank')}
+                    className="bg-rose-600 hover:bg-rose-700 text-white px-12 py-5 rounded-2xl font-black flex items-center gap-3 transition-all hover:scale-105 shadow-xl shadow-rose-200"
+                  >
+                    START TEST 1
+                    <ChevronRight size={20} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                {selectedSubject.chapters.map((ch, i) => {
+                  const locked = isLocked(`chapter_${selectedSubject.id}_${i}`);
+                  const isDisabled = locked && !adminAuth;
+                  return (
+                    <div 
+                      key={i} 
+                      onClick={() => !isDisabled && (setSelectedChapterIdx(i), setView('chapter'))}
+                      className={`p-6 rounded-2xl border-2 flex justify-between items-center transition-all relative
+                        ${isDisabled ? 'bg-slate-50 opacity-50 cursor-not-allowed border-slate-100' : 'bg-white cursor-pointer border-white hover:border-blue-500 hover:shadow-lg'}`}
+                    >
+                      <div className="flex items-center gap-4">
+                        <span className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${isDisabled ? 'bg-slate-200 text-slate-400' : 'bg-blue-100 text-blue-600'}`}>{i+1}</span>
+                        <p className="font-bold text-slate-800">{ch}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {locked && <Lock size={14} className="text-red-400" />}
+                        {isDisabled ? <Lock size={18} className="text-slate-300" /> : <ChevronRight size={18} className="text-blue-300" />}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {view === 'chapter' && (
+          <div className="animate-in slide-in-from-right-4 duration-500">
+            <button onClick={() => setView('subject')} className="mb-6 flex items-center text-[#003153] font-bold">
+              <ArrowLeft size={20} className="mr-2" /> Back
+            </button>
+            <div className="mb-10">
+              <h2 className="text-2xl font-black text-[#003153] mb-2">{selectedSubject.chapters[selectedChapterIdx]}</h2>
+              <div className="w-20 h-1.5 bg-blue-500 rounded-full"></div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {[0, 1, 2, 3, 4].map((idx) => {
+                const locked = isLocked(`set_${selectedSubject.id}_${selectedChapterIdx}_${idx}`);
+                const isDisabled = locked && !adminAuth;
+                return (
+                  <div 
+                    key={idx} 
+                    onClick={() => !isDisabled && startTest(idx)}
+                    className={`p-8 rounded-3xl border-2 text-center transition-all relative group
+                      ${isDisabled ? 'bg-slate-50 opacity-50 cursor-not-allowed border-slate-100' : 'bg-white cursor-pointer border-white hover:border-blue-600 shadow-md hover:shadow-2xl'}`}
+                  >
+                    {locked && <Lock className="absolute top-4 right-4 text-red-500" size={16} />}
+                    <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 mx-auto mb-4 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                      <BarChart2 size={24} />
+                    </div>
+                    <h4 className="font-black text-slate-800">Practice Set {idx + 1}</h4>
+                    <p className="text-slate-400 text-[10px] font-bold uppercase mt-2 tracking-widest">30 Questions</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {view === 'test' && (
+          <div className="max-w-3xl mx-auto pb-32 animate-in fade-in duration-300">
+            <div className="bg-white p-4 rounded-2xl shadow-xl border border-blue-100 mb-8 sticky top-20 z-40 flex justify-between items-center">
+              <div>
+                <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest">Ongoing Test</p>
+                <h3 className="font-black text-[#003153]">Set {selectedSetIdx+1}</h3>
+              </div>
+              <button onClick={() => setView('result')} className="bg-[#BF0A30] text-white px-6 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest shadow-lg">Submit Mission</button>
+            </div>
+            <div className="space-y-6">
+              {questions.map((q, idx) => {
+                const selectedOption = userAnswers[q.id];
+                const isResponded = selectedOption !== undefined;
+                return (
+                  <div key={q.id} className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
+                    <div className="flex gap-4 mb-6">
+                      <span className="flex-shrink-0 w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center font-black text-blue-600 text-xs">Q{idx+1}</span>
+                      <p className="font-bold text-slate-800 leading-relaxed">{q.text}</p>
+                    </div>
+                    <div className="grid gap-3 ml-12">
+                      {q.options.map((opt, oi) => {
+                        const isCurrentSelection = selectedOption === oi;
+                        const isThisCorrectOption = q.correctAnswer === oi;
+                        let btnStyle = "border-slate-100 hover:border-blue-600 hover:bg-blue-50";
+                        if (isResponded) {
+                          if (isThisCorrectOption) btnStyle = "border-emerald-500 bg-emerald-50 text-emerald-900";
+                          else if (isCurrentSelection) btnStyle = "border-red-500 bg-red-50 text-red-900";
+                          else btnStyle = "border-slate-50 opacity-40";
+                        }
+                        return (
+                          <button key={oi} disabled={isResponded} onClick={() => handleAnswerSelection(q.id, oi)} className={`w-full text-left p-4 rounded-xl border-2 transition-all text-sm font-bold flex items-center gap-3 ${btnStyle}`}>
+                            <span className={`w-6 h-6 rounded-md border flex items-center justify-center text-[10px] ${isResponded && isThisCorrectOption ? 'bg-emerald-500 text-white' : 'bg-slate-100'}`}>
+                              {String.fromCharCode(65 + oi)}
+                            </span>
+                            {opt}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {view === 'result' && (
+          <div className="animate-in zoom-in-95 duration-500 max-w-2xl mx-auto text-center py-20">
+            {(() => {
+              const { correct, wrong, skipped, accuracy } = calculateResults();
+              return (
+                <div className="bg-white p-12 rounded-[3rem] shadow-2xl border border-slate-100">
+                  <div className="bg-blue-50 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-8 text-blue-600">
+                    <Award size={48} />
+                  </div>
+                  <h2 className="text-4xl font-black text-[#003153] mb-4">Debrief Complete</h2>
+                  <div className="grid grid-cols-2 gap-4 mb-10">
+                    <div className="bg-emerald-50 p-6 rounded-2xl border border-emerald-100">
+                      <p className="text-3xl font-black text-emerald-600">{correct}</p>
+                      <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest mt-1">Correct</p>
+                    </div>
+                    <div className="bg-red-50 p-6 rounded-2xl border border-red-100">
+                      <p className="text-3xl font-black text-red-600">{wrong}</p>
+                      <p className="text-[10px] font-bold text-red-400 uppercase tracking-widest mt-1">Wrong</p>
+                    </div>
+                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                      <p className="text-3xl font-black text-slate-600">{skipped}</p>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Skipped</p>
+                    </div>
+                    <div className="bg-blue-600 p-6 rounded-2xl shadow-lg shadow-blue-200">
+                      <p className="text-3xl font-black text-white">{accuracy}%</p>
+                      <p className="text-[10px] font-bold text-blue-200 uppercase tracking-widest mt-1">Accuracy</p>
+                    </div>
+                  </div>
+                  <div className="flex gap-4">
+                    <button onClick={goHome} className="flex-1 bg-slate-100 text-slate-600 py-4 rounded-2xl font-black text-xs uppercase tracking-widest">Dashboard</button>
+                    <button onClick={() => { setView('test'); window.scrollTo(0, 0); }} className="flex-1 bg-[#003153] text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl">Re-Attempt</button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+      </main>
+
+      {/* ADMIN CONTROL PANEL MODAL */}
+      {isAdminOpen && (
+        <div className="fixed inset-0 z-[200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-[#003153] p-6 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <Settings className="animate-spin-slow" size={24} />
+                <h2 className="font-black text-sm uppercase tracking-widest">Command Center Access</h2>
+              </div>
+              <button onClick={() => { setIsAdminOpen(false); setAdminAuth(false); }} className="hover:rotate-90 transition-transform">
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="p-8 overflow-y-auto flex-1">
+              {!adminAuth ? (
+                <div className="text-center space-y-8 py-10 animate-in fade-in zoom-in-95">
+                  <div className="w-20 h-20 bg-slate-50 rounded-3xl mx-auto flex items-center justify-center">
+                    <Lock size={40} className="text-slate-300" />
+                  </div>
+                  <div className="space-y-4">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Restricted Access</p>
+                    <input 
+                      type="password" 
+                      value={accessCodeInput} 
+                      onChange={e => setAccessCodeInput(e.target.value)}
+                      onKeyPress={e => e.key === 'Enter' && handleAdminAuth()}
+                      placeholder="ENTER PIN" 
+                      className="w-full max-w-xs border-2 border-slate-100 rounded-2xl p-4 text-center text-3xl font-black outline-none focus:border-blue-500 bg-slate-50 transition-all"
+                      autoFocus
+                    />
+                  </div>
+                  <button onClick={handleAdminAuth} className="bg-blue-600 text-white px-12 py-4 rounded-2xl font-black shadow-xl shadow-blue-100 hover:scale-105 transition-transform">AUTHENTICATE</button>
+                </div>
+              ) : (
+                <div className="space-y-8 animate-in slide-in-from-bottom-5">
+                  <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100 flex items-center gap-3">
+                    <Unlock className="text-emerald-600" size={18} />
+                    <p className="text-xs font-black text-emerald-700 uppercase tracking-widest">Administrator Authenticated</p>
+                  </div>
+                  
+                  {SUBJECTS.map(subj => (
+                    <div key={subj.id} className="bg-slate-50/50 p-6 rounded-3xl border border-slate-100">
+                      <div className="flex justify-between items-center mb-6">
+                        <div className="flex items-center gap-3">
+                           <div className={`${subj.color} w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-sm`}>
+                             <SubjectIcon type={subj.icon} size={16} />
+                           </div>
+                           <h4 className="font-black text-slate-800 text-sm">{subj.title}</h4>
+                        </div>
+                        <button 
+                          onClick={() => updateLockState(`section_${subj.id}`, !isLocked(`section_${subj.id}`))}
+                          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isLocked(`section_${subj.id}`) ? 'bg-red-500 text-white' : 'bg-emerald-500 text-white'}`}
+                        >
+                          {isLocked(`section_${subj.id}`) ? <Lock size={12}/> : <Unlock size={12}/>}
+                          {isLocked(`section_${subj.id}`) ? 'LOCKED' : 'UNLOCKED'}
+                        </button>
+                      </div>
+
+                      <div className="space-y-3">
+                        {subj.chapters.map((ch, ci) => (
+                          <div key={ci} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+                            <div className="flex justify-between items-center mb-3">
+                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-tight truncate max-w-[60%]">{ci+1}. {ch}</span>
+                              <button 
+                                onClick={() => updateLockState(`chapter_${subj.id}_${ci}`, !isLocked(`chapter_${subj.id}_${ci}`))}
+                                className={`px-3 py-1.5 rounded-lg text-[8px] font-black ${isLocked(`chapter_${subj.id}_${ci}`) ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-400'}`}
+                              >
+                                {isLocked(`chapter_${subj.id}_${ci}`) ? 'CH LOCKED' : 'CH UNLOCKED'}
+                              </button>
+                            </div>
+                            <div className="flex gap-2">
+                              {[0, 1, 2, 3, 4].map(si => (
+                                <button 
+                                  key={si}
+                                  onClick={() => updateLockState(`set_${subj.id}_${ci}_${si}`, !isLocked(`set_${subj.id}_${ci}_${si}`))}
+                                  className={`flex-1 py-2 rounded-lg text-[9px] font-black border transition-all ${isLocked(`set_${subj.id}_${ci}_${si}`) ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-slate-50 border-slate-100 text-slate-400'}`}
+                                >
+                                  SET {si + 1}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <FloatingAIChat isVisible={view !== 'test'} />
     </div>
-  </header>
-);
+  );
+}
 
 const SubjectIcon = ({ type, size = 24, className = "" }) => {
   if (type === 'iaf') return <Shield size={size} className={className} />;
@@ -347,378 +862,3 @@ const FloatingAIChat = ({ isVisible }) => {
     </div>
   );
 };
-
-export default function App() {
-  const [view, setView] = useState('home');
-  const [selectedSubject, setSelectedSubject] = useState(null);
-  const [selectedChapterIdx, setSelectedChapterIdx] = useState(null);
-  const [selectedSetIdx, setSelectedSetIdx] = useState(null);
-  const [questions, setQuestions] = useState([]);
-  const [userAnswers, setUserAnswers] = useState({});
-
-  const goHome = () => {
-    setView('home');
-    setSelectedSubject(null);
-    setSelectedChapterIdx(null);
-    setUserAnswers({});
-  };
-
-  const startTest = (setIdx) => {
-    const qList = getQuestions(selectedSubject.id, selectedChapterIdx, setIdx);
-    if (qList.length === 0) {
-      alert("This practice set is not yet available.");
-      return;
-    }
-    setSelectedSetIdx(setIdx);
-    setQuestions(qList);
-    setUserAnswers({});
-    setView('test');
-    window.scrollTo(0, 0);
-  };
-
-  const handleAnswerSelection = (questionId, optionIndex) => {
-    if (userAnswers[questionId] !== undefined) return;
-    setUserAnswers(prev => ({ ...prev, [questionId]: optionIndex }));
-  };
-
-  const calculateResults = () => {
-    let correct = 0;
-    let wrong = 0;
-    let skipped = 0;
-
-    questions.forEach(q => {
-      if (userAnswers[q.id] === undefined) {
-        skipped++;
-      } else if (userAnswers[q.id] === q.correctAnswer) {
-        correct++;
-      } else {
-        wrong++;
-      }
-    });
-
-    const accuracy = (correct + wrong) > 0 ? ((correct / (correct + wrong)) * 100).toFixed(1) : 0;
-    return { correct, wrong, skipped, accuracy };
-  };
-
-  return (
-    <div className="min-h-screen relative font-sans pb-20 overflow-x-hidden bg-blue-50/50">
-      <style>{`
-        @keyframes pulse-red {
-          0% { transform: scale(0.95); opacity: 0.7; }
-          50% { transform: scale(1.1); opacity: 1; }
-          100% { transform: scale(0.95); opacity: 0.7; }
-        }
-        .animate-pulse-red {
-          animation: pulse-red 1.5s infinite ease-in-out;
-        }
-      `}</style>
-
-      <div className="fixed inset-0 z-0 flex pointer-events-none">
-        <div className="h-full w-1/3 bg-[#BF0A30]/5"></div>
-        <div className="h-full w-1/3 bg-[#003153]/5"></div>
-        <div className="h-full w-1/3 bg-[#87CEEB]/5"></div>
-      </div>
-      
-      <Header goHome={goHome} />
-      
-      <main className="relative z-10 max-w-6xl mx-auto p-4 md:p-6">
-        {view === 'home' && (
-          <div className="animate-in fade-in duration-500 mt-10">
-            <div className="text-center mb-12">
-              <div className="inline-block px-4 py-1 bg-[#003153] text-white text-[10px] font-bold uppercase tracking-widest rounded-full mb-4">Unity and Discipline</div>
-              <h2 className="text-4xl md:text-5xl font-black text-[#003153] mb-4">"By a Cadet, for the Cadets"</h2>
-              <p className="text-slate-600 max-w-lg mx-auto font-medium">Standardized preparation portal for the All India Vayu Sainik Camp.</p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mb-12">
-              {SUBJECTS.map(subj => (
-                <div 
-                  key={subj.id} 
-                  onClick={() => { setSelectedSubject(subj); setView('subject'); }}
-                  className={`bg-white p-8 rounded-3xl border ${subj.isLive ? 'border-rose-200' : 'border-slate-100'} shadow-sm cursor-pointer hover:shadow-2xl hover:-translate-y-2 transition-all group relative overflow-hidden`}
-                >
-                  {subj.isLive && (
-                    <div className="absolute top-4 right-4 flex items-center gap-2">
-                       <span className="w-3 h-3 bg-rose-600 rounded-full animate-pulse-red shadow-[0_0_10px_rgba(225,29,72,0.8)]"></span>
-                       <span className="text-[10px] font-black text-rose-600 uppercase tracking-tighter">LIVE NOW</span>
-                    </div>
-                  )}
-                  <div className={`${subj.color} w-16 h-16 rounded-2xl mb-6 flex items-center justify-center text-white shadow-lg group-hover:scale-110 transition-transform`}>
-                    <SubjectIcon type={subj.icon} size={32} />
-                  </div>
-                  <h3 className="text-xl font-black text-slate-800 mb-2">{subj.title}</h3>
-                  <p className="text-slate-500 text-sm mb-6 leading-relaxed line-clamp-2">{subj.description}</p>
-                  <div className="flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                    <span>{subj.chapters.length} Modules</span>
-                    <ChevronRight size={16} className="text-slate-300 group-hover:translate-x-1 transition-transform" />
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div 
-              onClick={() => setView('library')}
-              className="bg-[#003153] p-10 rounded-[2.5rem] shadow-2xl relative overflow-hidden cursor-pointer group"
-            >
-              <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
-                <FolderOpen size={160} className="text-white" />
-              </div>
-              <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
-                <div className="text-center md:text-left">
-                  <h3 className="text-3xl font-black text-white mb-2">Study Material Library</h3>
-                  <p className="text-blue-100/70 font-medium max-w-md">Access specialized handouts, SOPs, and manuals for your technical preparation.</p>
-                </div>
-                <div className="bg-white text-[#003153] px-8 py-4 rounded-2xl font-black flex items-center gap-3 hover:bg-blue-50 transition-colors">
-                  <Download size={20} />
-                  EXPLORE LIBRARY
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {view === 'library' && (
-          <div className="animate-in slide-in-from-right-4 duration-500">
-            <button onClick={goHome} className="mb-6 flex items-center text-[#003153] font-bold hover:translate-x-1 transition-transform">
-              <ArrowLeft size={20} className="mr-2" /> Back to Dashboard
-            </button>
-            <div className="flex items-center gap-4 mb-10">
-              <div className="bg-[#003153] p-5 rounded-2xl text-white shadow-xl">
-                <FolderOpen size={32} />
-              </div>
-              <div>
-                <h2 className="text-3xl font-black text-[#003153]">Study Materials</h2>
-                <p className="text-slate-500 text-sm font-bold uppercase tracking-widest">Digital Repository</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {STUDY_MATERIALS.map((file) => (
-                <div key={file.id} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl transition-all group">
-                  <div className="flex justify-between items-start mb-6">
-                    <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center">
-                      <FileText size={24} />
-                    </div>
-                    <span className="bg-slate-100 text-slate-500 text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest">
-                      {file.type}
-                    </span>
-                  </div>
-                  <h4 className="text-lg font-black text-slate-800 mb-1">{file.title}</h4>
-                  <p className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-6">{file.category}</p>
-                  
-                  <div className="flex items-center justify-between pt-6 border-t border-slate-50">
-                    <span className="text-xs font-bold text-slate-400">{file.size}</span>
-                    <button 
-                      onClick={() => {
-                        if (file.link) {
-                          window.open(file.link, '_blank');
-                        } else {
-                          alert(`Initiating secure download for ${file.title}...`);
-                        }
-                      }}
-                      className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-black hover:bg-blue-700 transition-colors"
-                    >
-                      <Download size={14} />
-                      {file.link ? 'OPEN LINK' : 'DOWNLOAD'}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {view === 'subject' && (
-          <div className="animate-in slide-in-from-right-4 duration-500">
-            <button onClick={goHome} className="mb-6 flex items-center text-[#003153] font-bold hover:translate-x-1 transition-transform">
-              <ArrowLeft size={20} className="mr-2" /> Back to Dashboard
-            </button>
-            <div className="flex items-center gap-4 mb-10">
-              <div className={`${selectedSubject.color} p-5 rounded-2xl text-white shadow-xl`}>
-                <SubjectIcon type={selectedSubject.icon} size={32} />
-              </div>
-              <div>
-                <h2 className="text-3xl font-black text-[#003153]">{selectedSubject.title}</h2>
-                <p className="text-slate-500 text-sm font-bold uppercase tracking-widest">{selectedSubject.isLive ? 'Active Sessions' : `${selectedSubject.chapters.length} Lessons Available`}</p>
-              </div>
-            </div>
-            
-            {selectedSubject.id === 'live-test' ? (
-              <div className="grid gap-6">
-                <div className="bg-white p-10 rounded-[2.5rem] border-2 border-rose-100 shadow-xl flex flex-col items-center text-center">
-                  <div className="w-20 h-20 bg-rose-50 rounded-3xl flex items-center justify-center text-rose-600 mb-6">
-                    <Target size={40} />
-                  </div>
-                  <h3 className="text-2xl font-black text-slate-800 mb-2">Test 1 - Comprehensive Evaluation</h3>
-                  <p className="text-slate-500 max-w-md mb-8">This is a timed assessment. Ensure you have a stable connection and are in a quiet environment before starting.</p>
-                  <button 
-                    onClick={() => window.open('https://docs.google.com/forms/d/e/1FAIpQLSf_5wZ7bnvDDZTu4NoyLulpI7ayJoNSiVv8X1onsGoh8Kj_kA/viewform', '_blank')}
-                    className="bg-rose-600 hover:bg-rose-700 text-white px-12 py-5 rounded-2xl font-black flex items-center gap-3 transition-all hover:scale-105 shadow-xl shadow-rose-200"
-                  >
-                    START TEST 1
-                    <ChevronRight size={20} />
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="grid gap-4">
-                {selectedSubject.chapters.map((ch, i) => {
-                  const isLocked = !questionDatabase[selectedSubject.id]?.[i];
-                  return (
-                    <div 
-                      key={i} 
-                      onClick={() => !isLocked && (setSelectedChapterIdx(i), setView('chapter'))}
-                      className={`p-6 rounded-2xl border-2 flex justify-between items-center transition-all
-                        ${isLocked ? 'bg-slate-50 opacity-50 cursor-not-allowed border-slate-100' : 'bg-white cursor-pointer border-white hover:border-blue-500 hover:shadow-lg'}`}
-                    >
-                      <div className="flex items-center gap-4">
-                        <span className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${isLocked ? 'bg-slate-200 text-slate-400' : 'bg-blue-100 text-blue-600'}`}>{i+1}</span>
-                        <p className="font-bold text-slate-800">{ch}</p>
-                      </div>
-                      {isLocked ? <Lock size={18} className="text-slate-300" /> : <ChevronRight size={18} className="text-blue-300" />}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {view === 'chapter' && (
-          <div className="animate-in slide-in-from-right-4 duration-500">
-            <button onClick={() => setView('subject')} className="mb-6 flex items-center text-[#003153] font-bold">
-              <ArrowLeft size={20} className="mr-2" /> Back
-            </button>
-            <div className="mb-10">
-              <h2 className="text-2xl font-black text-[#003153] mb-2">{selectedSubject.chapters[selectedChapterIdx]}</h2>
-              <div className="w-20 h-1.5 bg-blue-500 rounded-full"></div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {[1, 2, 3, 4, 5].map((s, idx) => {
-                const isLocked = !questionDatabase[selectedSubject.id]?.[selectedChapterIdx]?.[idx];
-                return (
-                  <div 
-                    key={idx} 
-                    onClick={() => !isLocked && startTest(idx)}
-                    className={`p-8 rounded-3xl border-2 text-center transition-all relative group
-                      ${isLocked ? 'bg-slate-50 opacity-50 cursor-not-allowed border-slate-100' : 'bg-white cursor-pointer border-white hover:border-blue-600 shadow-md hover:shadow-2xl'}`}
-                  >
-                    {isLocked && <Lock className="absolute top-4 right-4 text-slate-300" size={16} />}
-                    <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 mx-auto mb-4 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                      <BarChart2 size={24} />
-                    </div>
-                    <h4 className="font-black text-slate-800">Practice Set {s}</h4>
-                    <p className="text-slate-400 text-[10px] font-bold uppercase mt-2 tracking-widest">30 Questions</p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {view === 'test' && (
-          <div className="max-w-3xl mx-auto pb-32 animate-in fade-in duration-300">
-            <div className="bg-white p-4 rounded-2xl shadow-xl border border-blue-100 mb-8 sticky top-20 z-40 flex justify-between items-center">
-              <div>
-                <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest">Ongoing Test</p>
-                <h3 className="font-black text-[#003153]">Set {selectedSetIdx+1}</h3>
-              </div>
-              <button onClick={() => setView('result')} className="bg-[#BF0A30] text-white px-6 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest shadow-lg">Submit Mission</button>
-            </div>
-            <div className="space-y-6">
-              {questions.map((q, idx) => {
-                const selectedOption = userAnswers[q.id];
-                const isCorrect = selectedOption === q.correctAnswer;
-                const isResponded = selectedOption !== undefined;
-
-                return (
-                  <div key={q.id} className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
-                    <div className="flex gap-4 mb-6">
-                      <span className="flex-shrink-0 w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center font-black text-blue-600 text-xs">Q{idx+1}</span>
-                      <p className="font-bold text-slate-800 leading-relaxed">{q.text}</p>
-                    </div>
-                    <div className="grid gap-3 ml-12">
-                      {q.options.map((opt, oi) => {
-                        const isCurrentSelection = selectedOption === oi;
-                        const isThisCorrectOption = q.correctAnswer === oi;
-                        
-                        let btnStyle = "border-slate-100 hover:border-blue-600 hover:bg-blue-50";
-                        if (isResponded) {
-                          if (isThisCorrectOption) btnStyle = "border-emerald-500 bg-emerald-50 text-emerald-900";
-                          else if (isCurrentSelection) btnStyle = "border-red-500 bg-red-50 text-red-900";
-                          else btnStyle = "border-slate-50 opacity-40";
-                        }
-
-                        return (
-                          <button 
-                            key={oi} 
-                            disabled={isResponded}
-                            onClick={() => handleAnswerSelection(q.id, oi)}
-                            className={`w-full text-left p-4 rounded-xl border-2 transition-all text-sm font-bold flex items-center gap-3 ${btnStyle}`}
-                          >
-                            <span className={`w-6 h-6 rounded-md border flex items-center justify-center text-[10px] ${isResponded && isThisCorrectOption ? 'bg-emerald-500 text-white' : 'bg-slate-100'}`}>
-                              {String.fromCharCode(65 + oi)}
-                            </span>
-                            {opt}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {isResponded && !isCorrect && (
-                      <div className="mt-4 ml-12 p-3 bg-blue-50 rounded-lg text-blue-700 text-xs font-bold flex items-center gap-2">
-                        <AlertCircle size={14} /> Correct: {q.options[q.correctAnswer]}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {view === 'result' && (
-          <div className="animate-in zoom-in-95 duration-500 max-w-2xl mx-auto text-center py-20">
-            {(() => {
-              const { correct, wrong, skipped, accuracy } = calculateResults();
-              return (
-                <div className="bg-white p-12 rounded-[3rem] shadow-2xl border border-slate-100">
-                  <div className="bg-blue-50 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-8 text-blue-600">
-                    <Award size={48} />
-                  </div>
-                  <h2 className="text-4xl font-black text-[#003153] mb-4">Debrief Complete</h2>
-                  <p className="text-slate-500 mb-10 font-medium">Excellent work, Cadet. Review your metrics below.</p>
-
-                  <div className="grid grid-cols-2 gap-4 mb-10">
-                    <div className="bg-emerald-50 p-6 rounded-2xl border border-emerald-100">
-                      <p className="text-3xl font-black text-emerald-600">{correct}</p>
-                      <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest mt-1">Correct</p>
-                    </div>
-                    <div className="bg-red-50 p-6 rounded-2xl border border-red-100">
-                      <p className="text-3xl font-black text-red-600">{wrong}</p>
-                      <p className="text-[10px] font-bold text-red-400 uppercase tracking-widest mt-1">Wrong</p>
-                    </div>
-                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
-                      <p className="text-3xl font-black text-slate-600">{skipped}</p>
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Skipped</p>
-                    </div>
-                    <div className="bg-blue-600 p-6 rounded-2xl shadow-lg shadow-blue-200">
-                      <p className="text-3xl font-black text-white">{accuracy}%</p>
-                      <p className="text-[10px] font-bold text-blue-200 uppercase tracking-widest mt-1">Accuracy</p>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-4">
-                    <button onClick={goHome} className="flex-1 bg-slate-100 text-slate-600 py-4 rounded-2xl font-black text-xs uppercase tracking-widest">Dashboard</button>
-                    <button onClick={() => setView('test')} className="flex-1 bg-[#003153] text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl">Re-Attempt</button>
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-        )}
-      </main>
-
-      <FloatingAIChat isVisible={view !== 'test'} />
-    </div>
-  );
-}
