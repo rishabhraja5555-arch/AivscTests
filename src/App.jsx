@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, doc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { 
   Shield, Plane, ChevronRight, ArrowLeft, Award, 
   X, Lock, Unlock, CheckCircle2, 
@@ -27,17 +27,7 @@ const normalizeFirebaseConfig = (config) => {
   if (!config?.apiKey || !config?.projectId) return null;
 
   return {
-    ...config,
-    authDomain: config.authDomain || `${config.projectId}.firebaseapp.com`,
-    storageBucket: config.storageBucket || `${config.projectId}.appspot.com`
-  };
-};
-
-const envValue = (...keys) => {
-  for (const key of keys) {
-    if (import.meta.env[key]) return import.meta.env[key];
-  }
-  return null;
+@@ -41,54 +41,58 @@ const envValue = (...keys) => {
 };
 
 const envFirebaseConfig = {
@@ -67,6 +57,10 @@ const app = hasFirebaseConfig ? initializeApp(firebaseConfig) : null;
 const auth = app ? getAuth(app) : null;
 const db = app ? getFirestore(app) : null;
 const appId = getRuntimeGlobal('__app_id') || envValue('VITE_APP_ID', 'NEXT_PUBLIC_APP_ID', 'REACT_APP_APP_ID') || 'aivsc-prep-portal';
+const lockScopeId = getRuntimeGlobal('__lock_scope_id') || envValue('VITE_LOCK_SCOPE_ID', 'NEXT_PUBLIC_LOCK_SCOPE_ID', 'REACT_APP_LOCK_SCOPE_ID') || firebaseConfig?.projectId || 'aivsc-global-locks';
+
+const getLockScopeCandidates = () => Array.from(new Set([lockScopeId, appId].filter(Boolean)));
+const getLockDocRef = (scopeId) => doc(db, 'artifacts', scopeId, 'public', 'data', 'app_state', 'locks');
 
 // ==================================================================================
 // 🟢 CONTENT DATA
@@ -92,46 +86,7 @@ const questionDatabase = {
         { id: 3, text: "Primary construction material of Virus SW-80 airframe is", options: ["Aluminium alloy", "Steel tubing", "Composite materials", "Titanium"], correctAnswer: 2 }
       ]
     }
-  }
-};
-
-const SUBJECTS = [
-  { id: 'live-test', title: 'LIVE TEST SECTION', icon: 'activity', color: 'bg-rose-600', description: 'Active examination sessions and real-time assessments.', isLive: true, chapters: ["Official Mock 01", "Final Assessment"] },
-  { id: 'bluebook', title: 'BLUE BOOK', icon: 'iaf', color: 'bg-blue-600', description: 'Comprehensive guide on IAF, Aircraft, and Aviation.', chapters: ["Armed Forces & IAF Capsule", "Modes of Entry", "Aircraft Types", "Latest Trends", "Air Campaigns", "Principle of Flight"] },
-  { id: 'sop', title: 'SOP', icon: 'aircraft', color: 'bg-emerald-600', description: 'Standard Operating Procedures and Technical Specs.', chapters: ["Airplane Systems", "Limitations", "Technical Specs", "Normal Ops", "Emergency Procedures"] },
-  { id: 'health', title: 'HEALTH AND HYGIENE', icon: 'medic', color: 'bg-red-500', description: 'Physical health, First Aid, and Yoga.', chapters: ["Human Body Structure", "Hygiene & Sanitation", "Infectious Diseases", "First Aid"] },
-  { id: 'b-cert', title: 'B-CERTIFICATE', icon: 'grad', color: 'bg-amber-500', description: 'Mock tests for B-Certificate exam.', chapters: ["Mock 1", "Mock 2"] },
-  { id: 'c-cert', title: 'C-CERTIFICATE', icon: 'grad', color: 'bg-indigo-600', description: 'Mock tests for C-Certificate exam.', chapters: ["Mock 1", "Mock 2"] }
-];
-
-const shuffleArray = (array) => {
-  const shuffled = [...array];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled;
-};
-
-// ==================================================================================
-// 🛠️ APP LOGIC
-// ==================================================================================
-
-export default function App() {
-  const [view, setView] = useState('home');
-  const [user, setUser] = useState(null);
-  const [selectedSubject, setSelectedSubject] = useState(null);
-  const [selectedChapterIdx, setSelectedChapterIdx] = useState(null);
-  const [selectedSetIdx, setSelectedSetIdx] = useState(null);
-  const [questions, setQuestions] = useState([]);
-  const [userAnswers, setUserAnswers] = useState({});
-  const [locks, setLocks] = useState({});
-  const [isAdminOpen, setIsAdminOpen] = useState(false);
-  const [adminAuth, setAdminAuth] = useState(false);
-  const [accessCodeInput, setAccessCodeInput] = useState('');
-  const [pendingLocks, setPendingLocks] = useState({});
-  const [syncMessage, setSyncMessage] = useState('');
-
+@@ -135,109 +139,101 @@ export default function App() {
   // Authentication Setup (Rule 3 Compliance)
   useEffect(() => {
     if (!auth) return;
@@ -157,28 +112,28 @@ export default function App() {
   }, []);
 
   // Sync locks from Firestore in real-time (Rule 1 & 3 Compliance)
-  useEffect(() => {
-    if (!db) {
-      setLocks({});
-      setSyncMessage('Realtime sync unavailable: check Firebase config.');
-      return;
-    }
-
-    const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
-    const unsubscribe = onSnapshot(lockDoc, (snapshot) => {
-      if (snapshot.exists()) {
-        setLocks(snapshot.data().locks || {});
-      } else {
-        setLocks({});
-      }
-      setSyncMessage('');
-    }, (error) => {
-      console.error("Firestore Listen Error:", error);
-      setSyncMessage('Realtime sync error: unable to read lock updates.');
-    });
-
-    return () => unsubscribe();
-  }, [db, appId]);
+  useEffect(() => {␊
+    if (!db) {␊
+      setLocks({});␊
+      setSyncMessage('Realtime sync unavailable: check Firebase config.');␊
+      return;␊
+    }␊
+␊
+    const lockStateByScope = {};
+    const unsubscribers = getLockScopeCandidates().map((scopeId) => {
+      const lockDoc = getLockDocRef(scopeId);
+      return onSnapshot(lockDoc, (snapshot) => {
+        lockStateByScope[scopeId] = snapshot.exists() ? (snapshot.data().locks || {}) : {};
+        setLocks(Object.assign({}, ...Object.values(lockStateByScope)));
+        setSyncMessage('');
+      }, (error) => {
+        console.error(`Firestore Listen Error (${scopeId}):`, error);
+        setSyncMessage('Realtime sync error: unable to read lock updates.');
+      });
+    });␊
+␊
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }, [db]);
 
   // Handle locking/unlocking action
   const toggleLock = async (e, key) => {
@@ -196,25 +151,17 @@ export default function App() {
     setPendingLocks((prev) => ({ ...prev, [key]: true }));
     setLocks((prev) => ({ ...prev, [key]: nextLockValue }));
 
-    const lockDoc = doc(db, 'artifacts', appId, 'public', 'data', 'app_state', 'locks');
-
     try {
-      await updateDoc(lockDoc, { [`locks.${key}`]: nextLockValue });
+      await Promise.all(
+        getLockScopeCandidates().map((scopeId) => (
+          setDoc(getLockDocRef(scopeId), { locks: { [key]: nextLockValue } }, { merge: true })
+        ))
+      );
       setSyncMessage('');
     } catch (error) {
-      if (error?.code === 'not-found') {
-        try {
-          await setDoc(lockDoc, { locks: { [key]: nextLockValue } }, { merge: true });
-          setSyncMessage('');
-        } catch (fallbackError) {
-          console.error('Failed to create lock document:', fallbackError);
-          setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
-        }
-      } else {
-        console.error('Failed to update lock state:', error);
-        setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
-        setSyncMessage('Realtime sync error: lock write failed.');
-      }
+      console.error('Failed to update lock state:', error);
+      setLocks((prev) => ({ ...prev, [key]: previousLockValue }));
+      setSyncMessage('Realtime sync error: lock write failed.');
     } finally {
       setPendingLocks((prev) => {
         const updated = { ...prev };
@@ -575,3 +522,4 @@ export default function App() {
     </div>
   );
 }
+
